@@ -1,4 +1,4 @@
-# Mini Project for Advanced Robotic Perception course from ROB7-Group-163
+# Mini Project regarding Advanced Robotic Perception course from ROB7-Group-163
 ## Brief Description
 This project implements a socially aware path planner designed to navigate an autonomous agent—like robot from a start point to a goal point within a mapped environment, optimizing not just for distance, but also for social acceptability. The process starts by loading a map and using a YOLO (You Only Look Once) model [YOLOv11n] to detect dynamic obstacles like people and chairs. These detected objects are used to create an inflated cost map, ensuring the robot maintains a safe distance from physical boundaries.
 
