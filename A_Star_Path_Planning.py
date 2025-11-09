@@ -4,9 +4,9 @@
 # Importing the required libraries  
 import re
 import cv2
-import json
 import torch 
 import heapq
+import random  
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
@@ -20,6 +20,9 @@ mapImage = "Test_Images/Occupancy_Grid_Map.png"
 # Defining output path for saving final image
 outputPath = "New_Results/ImageResult.png"
 
+# Defining output path for saving final social cost map image
+outputPath2 = "New_Results/Social_Cost_Map.png"
+
 # System requirements setup
 # Loading the VLM model
 # particularly smolVLM-Instruct 
@@ -31,92 +34,164 @@ socialProcessor = AutoProcessor.from_pretrained(SOCIAL_MODEL_ID)
 # Initializing the VLM model and moving it to CPU memory
 socialModel = AutoModelForVision2Seq.from_pretrained(SOCIAL_MODEL_ID).to("cpu")
 
-# Setting the model to evaluation mode (disables dropout, etc.)
+# Setting the model to evaluation mode
 socialModel.eval()
+
+# Values for obstacle severity penalty
+PERSON_MULT = 1.0
+CHAIR_MULT  = 0.3
 
 
 # This function is used to create a
 # social cost map with smolVLM contribution
 def Social_Cost_Map(img, output_size):
-
-    # Converting the OpenCV BGR image array to a PIL RGB image object for the VLM
+    
+    # Converting input image to PIL format for model input
     pilIMG = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    coarse = 20  # Reverting to stable grid size for VLM output (20x20 grid)
-
-    # Shorten the prompt to save tokens 
-    # Detailed prompt instructing the VLM to return a specific JSON format
-    prompt = f""" Return ONLY a single, clean JSON array of length {coarse},
-             where each entry is a list of {coarse} floats in [0,1].
-             0=socially acceptable, 1=highly inappropriate.
-             """
-     
-    cleanPromptText = prompt.strip() 
     
-    # Formatting the prompt with the required <image> tag
-    formatted = f"<image>{prompt}"
+    # Constructing messages for chat template with image and prompt
+    messages = [
     
-    # Processing the image and text prompt into model inputs
-    inputs = socialProcessor(images=pilIMG, text=formatted, return_tensors="pt").to("cpu")
+        {
+            "role": "user",
+            "content": [
+                
+                {"type": "image"},
+               
+                {"type": "text", "text": "Top-down room. Score social cost 0-1 for 4 quadrants: top-left, top-right, bottom-left, bottom-right. 0.0=safe, 1.0=bad near yellow people/chairs. Output ONLY floating point numbers, no extra text."}
 
-    # Disabling gradient calculation for inference (saves memory and speeds up)
+            ]
+        }
+    ]
+
+    # Applying chat template to generate prompt string
+    prompt = socialProcessor.apply_chat_template(messages, add_generation_prompt=True)
+    
+    # Processing text and image inputs for model inference
+    inputs = socialProcessor(text=prompt, images=pilIMG, return_tensors="pt").to("cpu")
+
+    # Generating output with no gradient computation for efficiency
     with torch.no_grad():
-        
-        # Generating the VLM response
+    
+        # Generating token IDs using model with specified parameters
         output_ids = socialModel.generate(
-        
+    
             **inputs,
-            max_new_tokens=250,
-            do_sample=False,
-
-            # Using temperature 0.0 for deterministic output 
-            temperature=0.0 
+            max_new_tokens=20,
+            do_sample=True,
+            temperature=0.3,
         )
 
-    # Decoding the generated token IDs back into human-readable text
+    # Decoding generated token IDs to text string
     text = socialProcessor.decode(output_ids[0], skip_special_tokens=True)
     
-    # Aggressive Cleaning is still necessary:
-    # Removing the input prompt and formatting tags from the output text
-    raw_VLM_Output = text.replace(formatted, "").strip()
-    raw_VLM_Output = raw_VLM_Output.replace(cleanPromptText, "").strip() 
+    # Isolating Assistant
+    # Converting text to lowercase for finding assistant section
+    textLower = text.lower()
     
-    # Removing any remaining HTML/XML tags
-    clean_VLM_Output = re.sub(r'<[^>]+>', '', raw_VLM_Output)
-
-    # Try to parse JSON substring from the CLEANED output:
-    try:
-        
-        # Attempting a direct JSON load
-        data = json.loads(clean_VLM_Output)
-        
-    except:
-        
-        # fallback: locate JSON via regex in the CLEANED output
-        # Searching for the outermost array structure
-        match = re.search(r"\[[\s\S]*\]", clean_VLM_Output)
-        
-        if not match:
-            
-            print("No usable JSON from VLM, defaulting to zeros")
-            
-            # Returning a zero-cost map if parsing fails
-            return np.zeros(output_size, dtype=np.float32), raw_VLM_Output 
-        
-        # Loading JSON from the matched substring
-        data = json.loads(match.group(0))
-
-    # Converting the list-of-lists (JSON data) into a NumPy array
-    array = np.array(data, dtype=np.float32)
-
-    # Resizing the 20x20 social cost array to the final planner resolution
-    arrayResized = cv2.resize(array, output_size, interpolation=cv2.INTER_CUBIC)
-
-    # Normalizing the resized array if it contains non-zero costs
+    # Checking and extracting assistant response if present
+    if "assistant:" in textLower:
+    
+        # Finding start position of assistant response
+        assistant_start = textLower.find("assistant:") + len("assistant:")
+    
+        # Extracting raw output from assistant section
+        raw_VLM_Output = text[assistant_start:].strip()
+    
+    # Fallback extraction if no assistant marker found
+    else:
+    
+        # Removing prompt and stripping whitespace
+        raw_VLM_Output = text.replace(prompt, "").strip()
+    
+    # Cleaning VLM output by removing special tokens
+    clean_VLM_Output = re.sub(r'<[^>]+>', '', raw_VLM_Output).strip()
+    
+    # Initializing scores variable
+    scores = None
+    
+    # Searching for bracketed quadrant values using regex
+    match = re.search(r'\[([^\]]+)\]', clean_VLM_Output)  
+    
+    # Processing matched group if found
+    if match:
+    
+        # Attempting to parse quadrant string
+        try:
+    
+            # Removing spaces from matched string
+            quadSTR = match.group(1).replace(' ', '')
+    
+            # Splitting and converting to floats, filtering non-empty
+            quads = [float(x.strip()) for x in quadSTR.split(',') if x.strip()]
+    
+            # Using first 4 if available
+            if len(quads) >= 4:
+    
+                scores = quads[:4]
+    
+            # Padding with 0.5 if fewer than 4
+            elif len(quads) > 0:
+    
+                scores = quads + [0.5] * (4 - len(quads))
+    
+        # Handling parsing errors silently
+        except ValueError:
+    
+            pass
+    
+    # Enhanced Fallback: Any floats/ints from output
+    # Applying fallback if no scores parsed yet
+    if not scores:
+    
+        # Finding all numeric values in cleaned output
+        allNums = re.findall(r'\d+\.?\d*', clean_VLM_Output)
+    
+        # Processing found numbers if any
+        if allNums:
+    
+            # Attempting to convert to floats
+            try:
+    
+                # Converting first 4 numbers to floats
+                quads = [float(n) for n in allNums[:4]]
+    
+                # Clamping scores to [0,1] range and padding if needed
+                scores = [min(max(q, 0.0), 1.0) for q in quads] + [0.5] * (4 - len(quads))  
+    
+            # Handling conversion errors
+            except ValueError:
+    
+                pass
+    
+    # Defaulting to neutral scores if still no valid output
+    if not scores:
+    
+        # Printing warning for default usage
+        print("No valid quadrants from VLM, defaulting to 0.5")
+    
+        # Setting default quadrant scores
+        scores = [0.5, 0.5, 0.5, 0.5]
+    
+        # Updating raw output for logging
+        raw_VLM_Output = str(scores)
+    
+    # Printing parsed quadrant costs for debugging
+    print(f"Quadrant costs: {scores}")
+    
+    # Creating 2x2 array from quadrant scores
+    quadArray = np.array([[scores[0], scores[1]], [scores[2], scores[3]]], dtype=np.float32)
+    
+    # Resizing array to output dimensions using cubic interpolation
+    arrayResized = cv2.resize(quadArray, output_size, interpolation=cv2.INTER_CUBIC)
+    
+    # Normalizing resized array if max value exceeds 0
     if arrayResized.max() > 0:
-        
+    
+        # Dividing by max to scale to [0,1]
         arrayResized /= arrayResized.max()
 
-    # Returning the resized, normalized social cost map and the raw VLM output
+    # Returning normalized array and raw output string
     return arrayResized, raw_VLM_Output
 
 
@@ -124,83 +199,184 @@ def Social_Cost_Map(img, output_size):
 # path social awareness and optimality
 def EvaluatePath(img, start, goal):
     
-    # Converting the OpenCV BGR image array to a PIL RGB image object for the VLM
+    # Converting input image to PIL format for model input
     pilIMG = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-    # Detailed prompt for evaluation
-    # Instructions for the VLM to score the path (red line) on key criteria
-    prompt = f"""
-             Evaluate the path (red line from blue goal to green start) on a scale of
-             1 (Poor) to 5 (Excellent) for the following:
-             
-             1. Social Awareness (Avoids people and seating).
-             2. Optimality/Speed (Directness and path length).
-             3. Overall Score.
-             Return ONLY three comma-separated integers. Do not include your prompt, the criteria names, or any other characters. Example: 4, 5, 4
-             """
-     
-    cleanPromptText = prompt.strip()
+    # Constructing messages for chat template with image and prompt
+    messages = [
     
-    # Formatting the prompt with the required <image> tag
-    formatted = f"<image>{prompt}"
-    
-    # Processing the image and text prompt into model inputs
-    inputs = socialProcessor(images=pilIMG, text=formatted, return_tensors="pt").to("cpu")
+        {
+            "role": "user",
+            "content": [
+              
+                {"type": "image"},
+                
+                {"type": "text", "text": "You are given an image with a red path, a green start point, a blue goal point, and yellow obstacles. Score from 1 to 5 range: socially aware navigation and speed of the red path. Output ONLY integer numbers in brackets [], no extra text."}
 
-    # Disabling gradient calculation for inference
+            ]
+        }
+    ]
+
+    # Applying chat template to generate prompt string
+    prompt = socialProcessor.apply_chat_template(messages, add_generation_prompt=True)
+    
+    # Processing text and image inputs for model inference
+    inputs = socialProcessor(text=prompt, images=pilIMG, return_tensors="pt").to("cpu")
+
+    # Generating output with no gradient computation for efficiency
     with torch.no_grad():
-        
-        # Generating the VLM response
-        output_ids = socialModel.generate(
-        
+    
+        # Generating token IDs using model with specified parameters
+        outputIDs = socialModel.generate(
+    
             **inputs,
-            max_new_tokens=150,
-            do_sample=False,
-
-            # Using temperature 0.0 for deterministic output
-            temperature=0.0 
+            max_new_tokens=15,
+            do_sample=True,
+            temperature=0.3,
         )
 
-    # Decoding the generated token IDs into text
-    evaluationText = socialProcessor.decode(output_ids[0], skip_special_tokens=True)
+    # Decoding generated token IDs to evaluation text
+    evaluationText = socialProcessor.decode(outputIDs[0], skip_special_tokens=True)
     
-    # Aggressively clean the output
-    raw_VLM_Output = evaluationText.replace(formatted, "").strip()
-    raw_VLM_Output = raw_VLM_Output.replace(cleanPromptText, "").strip()
+    # Isolate Assistant
+    # Converting text to lowercase for finding assistant section
+    textLower = evaluationText.lower()
+    
+    # Checking and extracting assistant response if present
+    if "assistant:" in textLower:
+    
+        # Finding start position of assistant response
+        assistant_start = textLower.find("assistant:") + len("assistant:")
+    
+        # Extracting raw output from assistant section
+        raw_VLM_Output = evaluationText[assistant_start:].strip()
+    
+    # Fallback extraction if no assistant marker found
+    else:
+    
+        # Removing prompt and stripping whitespace
+        raw_VLM_Output = evaluationText.replace(prompt, "").strip()
+    
+    # Cleaning VLM output by removing special tokens
     clean_VLM_Output = re.sub(r'<[^>]+>', '', raw_VLM_Output).strip()
     
-    # Try to parse the scores
-    scores = None
- 
-    try:
- 
-        # Look for 3 comma-separated numbers (allowing for some whitespace)
-        match = re.search(r"(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", clean_VLM_Output)
- 
-        if match:
- 
-            # Extracting the three scores as integers
-            scores = [int(match.group(i)) for i in range(1, 4)]
- 
-    except:
- 
-        # Fall through to the final return if parsing fails
-        pass
+    # Finding all integer values after cleaning
+    allInts = re.findall(r'\d+', clean_VLM_Output.replace('.', ''))  
+    
+    # Processing found integers if at least one exists
+    if len(allInts) >= 1:  
+    
+        # Clamping scores to [1,5] range using first 2
+        scores = [max(1, min(5, int(i))) for i in allInts[:2]]
+    
+        # Padding with average score if fewer than 2
+        if len(scores) < 2:
+    
+            scores += [3] * (2 - len(scores))  
+    
+    # Defaulting to neutral scores if no integers found
+    else:
+    
+        scores = [3, 3]
 
-    # Format the final output for the user
-    if scores and len(scores) == 3:
- 
-        # Returning structured evaluation scores
+    # Returning formatted evaluation string if scores available
+    if scores:
+    
+        # Formatting scores into multi-line string
         return f"""
                1. Social Awareness: {scores[0]} / 5
                2. Optimality/Speed: {scores[1]} / 5
-               3. Overall Score: {scores[2]} / 5
-               Raw VLM Output (cleaned): {clean_VLM_Output}
                """
+    
+    # Handling fallback case for evaluation
     else:
-         
-        # Return the raw cleaned output if the pattern wasn't found
-        return f"VLM failed to return structured scores. Raw cleaned output:\n{clean_VLM_Output}"
+    
+        # Printing fallback message
+        print("Eval fallback to average")
+    
+        # Setting default scores
+        scores = [3, 3]
+    
+        # Returning formatted fallback string
+        return f"""
+               1. Social Awareness: {scores[0]} / 5 (fallback)
+               2. Optimality/Speed: {scores[1]} / 5 (fallback)
+               """
+
+
+# This function is for VLM queries to provide a score for each detected obstacle
+def VLM_Object_Threat(img, boxes): 
+    
+    # Converting input image to PIL format for cropping
+    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    
+    # Initializing empty list for threat scores
+    scores = []
+
+    # Iterating over each bounding box
+    for (x1, y1, x2, y2) in boxes:
+    
+        # Cropping image to bounding box region
+        crop = pil.crop((x1, y1, x2, y2))
+
+        # Constructing messages for chat template with cropped image and prompt
+        messages = [
+    
+            {
+                "role": "user",
+                "content": [
+    
+                    {"type": "image"},
+    
+                    {
+                        "type": "text",
+                        "text": "Rate SOCIAL-RISK of this object on scale 0–1. 0=safe, 1=highest risk. Output ONLY a floating point number, no extra text"
+                        "."
+                    }
+                ]
+            }
+        ]
+
+        # Applying chat template to generate prompt string
+        prompt = socialProcessor.apply_chat_template(messages, add_generation_prompt=True)
+        
+        # Processing text and cropped image inputs for model inference
+        inputs = socialProcessor(text=prompt, images=crop, return_tensors="pt").to("cpu")
+
+        # Generating output with no gradient computation for efficiency
+        with torch.no_grad():
+    
+            # Generating token IDs using model with specified parameters
+            ids = socialModel.generate(
+    
+                **inputs, max_new_tokens=10, do_sample=True, temperature=0.3
+            )
+
+        # Decoding generated token IDs to text
+        text = socialProcessor.decode(ids[0], skip_special_tokens=True)
+
+        # Extract number
+        # Finding all numeric values in decoded text
+        nums = re.findall(r"\d+\.?\d*", text)
+    
+        # Processing first number if found
+        if nums:
+    
+            # Converting to float and clamping to [0,1]
+            v = float(nums[0])
+            v = min(max(v, 0.0), 1.0)
+    
+        # Fallback to neutral score if no number found
+        else:
+    
+            v = 0.5   
+    
+        # Appending computed score to list
+        scores.append(v)
+
+    # Returning list of threat scores
+    return scores
+
 
 # Reference coordinates (defined in 500x500 space) 
 # Reference width for scaling coordinates
@@ -219,6 +395,7 @@ refGoal  = [15, 440]
 # Temporarily reading the map image to check its actual dimensions
 tempImage = cv2.imread(mapImage)
 
+# Checking if image loaded successfully
 if tempImage is None:
 
     # Raising an error if the map file is not found
@@ -234,6 +411,7 @@ testWidth, testHeight = 250, 250
 plannerWidth = testWidth
 plannerHeight = testHeight
 
+# Printing forced test dimensions
 print(f"Forced test size: {plannerWidth}×{plannerHeight}")
 
 # Scale start/goal to actual image size 
@@ -249,6 +427,7 @@ startPixel = [int(refStart[0] * scaleX), int(refStart[1] * scaleY)]
 # Scaling the reference goal X/Y coordinates to the planner size
 goalPixel  = [int(refGoal[0]  * scaleX), int(refGoal[1]  * scaleY)]
 
+# Printing image and scaled point information
 print(f"Image loaded: {actualWidth}x{actualHeight}")
 print(f"Scaled Start: {startPixel}, Goal: {goalPixel}")
 
@@ -361,7 +540,7 @@ def AStar(grid, costMap, start, goal):
     # Getting grid shape
     rows, cols = grid.shape
 
-    # Defining movement directions (dx, dy, base_cost) for 8 directions
+    # Defining movement directions (dx, dy, baseCost) for 8 directions
     moves = [
 
         (0, 1, 1), (0, -1, 1), (1, 0, 1), (-1, 0, 1), # Cardinal moves (cost 1)
@@ -392,8 +571,9 @@ def AStar(grid, costMap, start, goal):
             ny = y + dy
 
             # Checking bounds and free cell (grid[y, x] == 1 means free space)
-            if 0 <= nx < cols and 0 <= ny < rows:
+            if 0 <= nx < cols and 0 <= ny < rows: 
 
+                # Validating grid cell is traversable
                 if grid[ny, nx] == 1:
 
                     # Initializing turn penalty
@@ -405,6 +585,7 @@ def AStar(grid, costMap, start, goal):
                         # Compares (current - prev) vector to (next - current) vector
                         if (current[0] - prev[0], current[1] - prev[1]) != (nx - x, ny - y):
 
+                            # Applying turn penalty if direction changes
                             turnCost = turnPenalty
 
                     # Initializing curvature penalty
@@ -419,11 +600,22 @@ def AStar(grid, costMap, start, goal):
                         # Computing vector from current to next
                         v2 = np.array([nx - x, ny - y])
 
+                        # Normalizing vectors to unit length for stable cosine
+                        if np.linalg.norm(v1) > 0:
+                           
+                            # Normalizing first vector
+                            v1 = v1 / np.linalg.norm(v1)
+                        
+                        # Normalizing second vector if non-zero
+                        if np.linalg.norm(v2) > 0:
+                        
+                            v2 = v2 / np.linalg.norm(v2)
+
                         # Calculating angle if vectors are non-zero
                         if np.linalg.norm(v1) > 0 and np.linalg.norm(v2) > 0:
 
-                            # Computing cosine of angle between the two movement segments
-                            cosAngle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                            # Computing the angle of the two vectors 
+                            cosAngle = np.dot(v1, v2)
 
                             # Clipping cosine to valid range [-1, 1] to prevent math errors
                             cosAngle = np.clip(cosAngle, -1, 1)
@@ -498,9 +690,11 @@ def LineOfSight(grid, p1, p2):
         # Updating position in X or Y based on error term
         if error > 0:
             
+            # Incrementing X and subtracting Y error
             x += xInc
             error -= dy
             
+        # Incrementing Y and adding X error
         else:
             
             y += yInc
@@ -538,7 +732,7 @@ def PrunePath(path, grid):
 
                 break
 
-            # Move one step backward if line of sight fails
+            # Moving one step backward if line of sight fails
             nextIndex -= 1
 
         # Appending next visible point (which is the new segment end point)
@@ -572,13 +766,17 @@ def SmoothPath(path, smoothFactor=5):
     tck, u = splprep([xs, ys], s=smoothFactor)
 
     # Creating dense parameter array for smooth evaluation
-    uNew = np.linspace(0, 1, len(path) * 4)
+    uNew = np.linspace(0, 1, len(path))
 
     # Evaluating spline at dense parameter points
     out = splev(uNew, tck)
 
     # Converting to integer points and zipping X and Y coordinates
     smoothed = list(zip(out[0].astype(int), out[1].astype(int)))
+
+    # Clamping to bounds and shifting inside walls
+    smoothed = [(min(max(int(x), 0), plannerWidth-1), min(max(int(y), 0), plannerHeight-1)) for x, y in smoothed]
+    smoothed = [ShiftInsideWall(p) for p in smoothed]
 
     # Returning smoothed path
     return smoothed
@@ -590,15 +788,16 @@ def RunPlanner():
     # Reading map image
     image = cv2.imread(mapImage)
 
-    # Resize to planner size (test or original)
-    image = cv2.resize(image, (plannerWidth, plannerHeight))
-
     # Checking if image is loaded
     if image is None:
 
+        # Printing error message for missing map
         print("Map not found")
 
         return
+
+    # Resizing image to planner dimensions
+    image = cv2.resize(image, (plannerWidth, plannerHeight))
 
     # Copying image for drawing the path and markers
     imgDraw = image.copy()
@@ -607,57 +806,94 @@ def RunPlanner():
     model = YOLO(yoloModelPath)
 
     # Detecting obstacles
-    # Run YOLO on fixed 320x320 for stable detection
+    # Running YOLO on fixed 320x320 for stable detection
     yoloSize = 320
     
-    # Resizing the map image to YOLO's input size
-    yoloImage = cv2.resize(image, (yoloSize, yoloSize))
+    # Calculating aspect-preserving scale
+    h, w = image.shape[:2]
+
+    # Computing resize scale to fit within YOLO input size
+    scale = min(yoloSize / w, yoloSize / h)
     
-    # Running detection
+    # Calculating new dimensions after scaling
+    newW, newH = int(w * scale), int(h * scale)
+    
+    # Resizing image to new dimensions
+    yoloImage = cv2.resize(image, (newW, newH))
+    
+    # Calculating horizontal padding
+    padW = (yoloSize - newW) // 2
+    
+    # Calculating vertical padding
+    padH = (yoloSize - newH) // 2
+    
+    # Padding image to square YOLO input size
+    yoloImage = cv2.copyMakeBorder(yoloImage, padH, yoloSize - newH - padH, padW, yoloSize - newW - padW, cv2.BORDER_CONSTANT, 0)
+    
+    # Running YOLO detection on padded image
     results = model(yoloImage, save=False)
 
     # Initializing list of bounding boxes
     boxes = []
-    
+        
     # Setting a minimum size for detected boxes, scaled
     minBoxSize = max(8, int(25 * scaleX))  # Stronger min size
 
     # Processing YOLO detection results
     for r in results:
-        
-        # Iterating over all detected bounding boxes
-        for box in r.boxes.xyxy.cpu().numpy():
             
+        # Iterating over all detected bounding boxes
+        for box, conf, cls in zip(
+                                    r.boxes.xyxy.cpu().numpy(),
+                                    r.boxes.conf.cpu().numpy(),
+                                    r.boxes.cls.cpu().numpy()
+                                ):
+
+            # Skipping low-confidence detections
+            if conf < 0.35:
+            
+                continue
+                            
             # Unpacking coordinates (x_min, y_min, x_max, y_max)
             x1, y1, x2, y2 = box.astype(float)
+
+            # Correcting padding offsets
+            x1 -= padW
+            y1 -= padH
+            x2 -= padW
+            y2 -= padH
             
-            # Rescaling X coordinates from YOLO size (320) to planner size
-            x1 = x1 * plannerWidth  / yoloSize
-            x2 = x2 * plannerWidth  / yoloSize
+            # Rescaling X coordinates to planner size
+            x1 = x1 * plannerWidth  / newW
+            x2 = x2 * plannerWidth  / newW
             
-            # Rescaling Y coordinates from YOLO size (320) to planner size
-            y1 = y1 * plannerHeight / yoloSize
-            y2 = y2 * plannerHeight / yoloSize
+            # Rescaling Y coordinates to planner size
+            y1 = y1 * plannerHeight / newH
+            y2 = y2 * plannerHeight / newH
 
             # Converting coordinates to integers
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
             
             # Calculating width and height
-            w, h = x2 - x1, y2 - y1
+            bw, bh = x2 - x1, y2 - y1
 
             # Enforcing minimum size on width
-            if w < minBoxSize:
-                
+            if bw < minBoxSize:
+                    
+                # Calculating center for width expansion
                 center = (x1 + x2) // 2
                 
+                # Expanding box to minimum width around center
                 x1 = center - minBoxSize // 2
                 x2 = center + (minBoxSize + 1) // 2
                 
             # Enforcing minimum size on height
-            if h < minBoxSize:
-                
+            if bh < minBoxSize:
+                    
+                # Calculating center for height expansion
                 center = (y1 + y2) // 2
                 
+                # Expanding box to minimum height around center
                 y1 = center - minBoxSize // 2
                 y2 = center + (minBoxSize + 1) // 2
 
@@ -670,33 +906,43 @@ def RunPlanner():
             x1, y1, x2, y2 = np.clip([x1, y1, x2, y2], 0, [plannerWidth-1, plannerHeight-1]*2)
             
             # Appending final box coordinates
-            boxes.append((int(x1), int(y1), int(x2), int(y2)))
+            boxes.append(((int(x1), int(y1), int(x2), int(y2)), int(cls)))
 
     # Filling grid
     # Initializing obstacle grid (0: free, 1: obstacle)
     grid = np.zeros((plannerHeight, plannerWidth), dtype=np.uint8)
-    
-    # Filling the grid with detected bounding boxes (set to 1)
-    for x1, y1, x2, y2 in boxes:
         
+    # Filling the grid with detected bounding boxes (set to 1)
+    for (x1, y1, x2, y2), cid in boxes:
+            
+        # Marking bounding box region as obstacle
         grid[y1:y2, x1:x2] = 1
 
-    # Small dilation to slightly expand detected obstacles
+    # Applying small dilation to slightly expand detected obstacles
     extraKernel = np.ones((3, 3), np.uint8)
     grid = cv2.dilate(grid, extraKernel, iterations=1)
 
     # Calculating dilation scale based on safety radius and planner size
     dilateScale = max(1.5, 2.0 * scaleX)
-    
+        
     # Determining kernel size for safety radius dilation (must be odd)
     kernelSize = max(3, int(safetyRadius * dilateScale * 2 + 1))
     kernelSize = kernelSize if kernelSize % 2 == 1 else kernelSize + 1
-    
+        
     # Creating the dilation kernel
     kernel = np.ones((kernelSize, kernelSize), np.uint8)
-    
+        
     # Applying strong dilation to create inflated obstacles
-    inflated = cv2.dilate(grid, kernel, iterations=1)
+    # Proportional inflation
+    iterations = max(1, int(safetyRadius / (kernelSize // 2))) 
+    inflated = cv2.dilate(grid, kernel, iterations=iterations)
+
+    # Displaying the grid map with white masks,
+    # that show people are puffier than other obstacles,
+    # thus, increased safety around them 
+    cv2.imshow("Inflated Grid Map", (inflated * 255).astype(np.uint8))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
     # Defining free cells: planner grid (1: free, 0: obstacle)
     planner = (inflated == 0).astype(np.uint8)
@@ -718,30 +964,29 @@ def RunPlanner():
     # Creating coordinate grids
     yGrid, xGrid = np.ogrid[:plannerHeight, :plannerWidth]
 
-    # Protect start
+    # Protecting start point
     startX, startY = start
-    
+        
     # Creating a circular mask around the start point
     startMask = (xGrid - startX)**2 + (yGrid - startY)**2 <= protectionRadius**2
-    
+        
     # Setting masked areas in planner grid to free (1)
     planner[startMask] = 1
-    
+        
     # Setting masked areas in inflated grid to non-obstacle (0)
     inflated[startMask] = 0
 
-    # Protect goal
+    # Protecting goal point
     goalX, goalY = goal
-    
+        
     # Creating a circular mask around the goal point
     goalMask = (xGrid - goalX)**2 + (yGrid - goalY)**2 <= protectionRadius**2
-    
+        
     # Setting masked areas in planner grid to free (1)
     planner[goalMask] = 1
-    
+        
     # Setting masked areas in inflated grid to non-obstacle (0)
     inflated[goalMask] = 0
-
 
     # Creating binary obstacle map (1: obstacle, 0: free)
     binaryObs = (inflated != 0).astype(np.uint8)
@@ -754,21 +999,83 @@ def RunPlanner():
 
     # Creating cost map
     # Stronger cost near obstacles
-    
-    # Inverse-distance cost function (high cost near obstacles, low far away)
+    # Applying inverse-distance cost function (high cost near obstacles, low far away)
     costMap = costAmplifier * (1.0 / (distance + 1.0))**3
-    
-    # Cap for stability
-    costMap = np.clip(costMap, 0, 100)  
+        
+    # Capping cost map for stability
+    costMap = np.clip(costMap, 0, 100) 
 
+    # Checking on cost map if people are shown as larger
+    # white blobs versus oher obstacles
+    cv2.imshow("Cost Map", (costMap / costMap.max() * 255).astype(np.uint8))  
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # Querying VLM for social cost
     print("Querying VLM for social cost...")
-    
+        
     # Getting social cost map from VLM and its raw output
     socialCost, vlmReasoning = Social_Cost_Map(image, (plannerWidth, plannerHeight))
-    
-    # Weight for the social cost component
+
+    # Hierarchical: YOLO local threats on VLM quadrants
+    # Initializing threat map as zeros
+    threatMap = np.zeros((plannerHeight, plannerWidth), dtype=np.float32)
+
+    # Querying VLM for per-object threat
+    print("Querying VLM for per-object threat...")
+    objScores = VLM_Object_Threat(image, [b for (b, _cid) in boxes])
+
+    print("The scores area:", objScores)
+
+    # Processing each box and score for threat map
+    for ((x1, y1, x2, y2), cid), score in zip(boxes, objScores):
+
+        # Scaling score by class
+        # person class for YOLO11
+        if cid in [0]:   
+          
+            # Applying person multiplier to score
+            score *= PERSON_MULT
+        
+        # Applying chair multiplier to score
+        else:
+        
+            score *= CHAIR_MULT
+
+        # Calculating center coordinates
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+
+        # Creating coordinate grids for distance calculation
+        yy, xx = np.ogrid[:plannerHeight, :plannerWidth]
+
+        # Computing Euclidean distance grid from center
+        dist = np.sqrt((xx - cx)**2 + (yy - cy)**2)
+
+        # Setting sigma for Gaussian decay
+        sigma = safetyRadius
+
+        # Computing Gaussian decay weighted by score
+        decay = np.exp(-dist / sigma) * score
+
+        # Taking maximum across overlapping threats
+        threatMap = np.maximum(threatMap, decay)  
+
+    # Clipping threat map to [0,1] range
+    threatMap = np.clip(threatMap, 0, 1)
+
+    # Setting alpha for blending social costs
+    # Blending: 60% VLM global, 40% YOLO local
+    alpha = 0.4 
+
+    # Blending global and local social costs
+    socialCost = (1 - alpha) * socialCost + alpha * threatMap
+
+    # Printing maximum threat value
+    print(f"Hierarchical blend: Max threat {threatMap.max():.2f}")
+
+    # Setting weight for the social cost component
     socialWeight = 3.5
-    
+        
     # Adding the weighted social cost to the overall cost map
     costMap += socialWeight * socialCost
 
@@ -788,17 +1095,30 @@ def RunPlanner():
     # Defining function for ensuring valid points
     def EnsureValid(points):
 
+        # Unpacking point coordinates
         x, y = points
+
+        # Initializing attempt counter
         attempts = 0
 
         # Looping until free cell is found or attempts exceed 100
         while planner[y, x] == 0 and attempts < 100:
+                
+            # Jittering every 10 steps
+            if attempts % 10 == 0:
+            
+                # Adding random jitter to coordinates
+                x += random.randint(-1, 1)
+            
+                y += random.randint(-1, 1)
 
             # Shifting X towards the nearest image half
             if x < plannerWidth / 2:
 
+                # Incrementing X if left half
                 x += 1
 
+            # Decrementing X if right half
             else:
 
                 x -= 1
@@ -806,8 +1126,10 @@ def RunPlanner():
             # Shifting Y towards the nearest image half
             if y < plannerHeight / 2:
 
+                # Incrementing Y if top half
                 y += 1
 
+            # Decrementing Y if bottom half
             else:
 
                 y -= 1
@@ -815,10 +1137,12 @@ def RunPlanner():
             # Ensuring the shifted point is still inside wall margins
             x, y = ShiftInsideWall([x, y])
 
+            # Incrementing attempt counter
             attempts += 1
 
         # Returning the validated free cell point
         return (x, y)
+
 
     # Validating start point (s) to ensure it's in a free cell
     start = EnsureValid(tuple(start))
@@ -831,16 +1155,31 @@ def RunPlanner():
 
     # Running A* search
     print("Running A*")
-    
+        
     # Executing A* to find the initial raw path
     raw = AStar(planner, costMap, start, goal)
 
     # Checking if path exists
     if raw is None:
-  
-        print("No path found")
+    
+        # Printing message for no path found
+        print("No path found, trying straight line")
+        
+        # Checking direct line of sight for fallback path
+        if LineOfSight(planner, start, goal):
+        
+            # Creating direct path from start to goal
+            path = [start, goal]
 
-        return
+            # Using direct path as raw for post-processing
+            raw = path  
+            
+        # Handling case with no viable path
+        else:
+        
+            # Printing no viable path message
+            print("No viable path")
+            return
 
     # Pruning path to remove redundant waypoints
     raw = PrunePath(raw, planner)
@@ -857,7 +1196,6 @@ def RunPlanner():
         # Drawing line segment between adjacent path points
         cv2.line(imgDraw, tuple(path[i]), tuple(path[i + 1]), pathColor, lineThickness)
         
-        
     # Drawing start circle marker
     cv2.circle(imgDraw, start, markerRadius, startColor, -1)
 
@@ -865,8 +1203,8 @@ def RunPlanner():
     cv2.circle(imgDraw, goal, markerRadius, goalColor, -1)
 
     # Drawing detected boxes
-    for x1, y1, x2, y2 in boxes:
-
+    for (x1, y1, x2, y2), cid in boxes:
+        
         # Drawing the yellow bounding box outline
         cv2.rectangle(imgDraw, (x1, y1), (x2, y2), (0, 255, 255), boxThickness)
 
@@ -877,30 +1215,46 @@ def RunPlanner():
     print("Saved", outputPath)
 
     # VLM Reasoning and Evaluation 
+    # Printing VLM social cost reasoning header
     print("\nVLM SOCIAL COST REASONING")
+    
+    # Printing raw VLM reasoning output
     print(vlmReasoning)
 
+    # Printing VLM path evaluation header
     print("\nVLM PATH EVALUATION")
-    
-    # Must use the final image with path drawn
+        
     # Executing VLM path evaluation function
     evaluationResult = EvaluatePath(imgDraw, start, goal)
+    
+    # Printing evaluation result
     print(evaluationResult)
 
     # Visualizing the social cost map
+    # Scaling social cost to 8-bit grayscale for display
     visualization = (socialCost * 255).astype(np.uint8)
+    
+    # Displaying social cost map window
     cv2.imshow("Social Cost", visualization)
+
+    # Saving social cost map image
+    cv2.imwrite("New_Results/Social_Cost_Map.png", visualization)
+
+    # Printing saved message for social cost map
+    print("Saved", "Social_Cost_Map.png")
 
     # Showing A* planner window 
     cv2.imshow("A* Planner", imgDraw)
 
-    # Waiting key press to close windows
+    # Waiting for key press to close windows
     cv2.waitKey(0)
 
     # Closing all windows
     cv2.destroyAllWindows()
 
-# Running A* planner function
+
+# Running main logic
 if __name__ == "__main__":
     
+    # Executing planner main function
     RunPlanner()
