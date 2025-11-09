@@ -6,6 +6,8 @@ Crucially, the system introduces a layer of intelligence by querying a Visual La
 
 Once the raw path is found, it is refined using a line-of-sight pruning algorithm to remove redundant waypoints and then smoothed using B-spline interpolation to create a fluid, continuous trajectory. Finally, the VLM is queried again to provide an evaluation of the generated path's social awareness and optimality, offering a quantifiable feedback loop. In short, the program aims to generate paths that are not only efficient and safe but also polite and predictable, making robot movement seamless and less disruptive in human-centric spaces. The end result is a visual representation of the path overlaid on the map [2D Static Image].
 
+Ultimately, the generated path from our tech pipeline is compared to other generated paths from other LLMs, using as inputs: a prompt and the original image that has the two people/obstacles, 5 chairs/obstacles, the start green point and goal blue point. The results from LLMs' generated paths are quite interesting. They are stored in the folder LLMs_Results. Hope this project to assist you with brainstorming new exciting ideas for your own awesome work!
+
 ### A_Star_Path_Planning.py
 This is the program that contains the entire logic and functions for this project. The other python files are subset of the A_Star_Path_Planning.py, provided for easier comprehension of the code and implementation of it.
 
