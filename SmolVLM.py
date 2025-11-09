@@ -3,7 +3,9 @@
 
 # Importing the required libraries
 import os
-import torch
+import re
+import cv2
+import torch 
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForVision2Seq
 
@@ -11,79 +13,168 @@ from transformers import AutoProcessor, AutoModelForVision2Seq
 # System requirements setup
 # Loading the VLM model
 # particularly smolVLM-Instruct 
-MODEL_ID = "HuggingFaceTB/SmolVLM-Instruct"
+SOCIAL_MODEL_ID = "HuggingFaceTB/SmolVLM-Instruct"
 
-# The Occupancy grid map
-# image to be used for the process
-IMAGE_PATH = "Test_Images/Occupancy_Grid_Map.png"
+# Defining path of the occupancy grid map image
+mapImage = "New_Results/ImageResult.png"
 
-# Using either CPU or GPU of the
-# computer based on availability
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Initializing the model processor (tokenizer and feature extractor)
+socialProcessor = AutoProcessor.from_pretrained(SOCIAL_MODEL_ID)
 
-# Maximun number of tokens to be
-# used from smolVLM for responses
-MAX_NEW_TOKENS = 200
+# Initializing the VLM model and moving it to device memory
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# New size of the occupancy grid map image
-# for computing resourse management
-NEW_SIZE = (384, 384)  
+socialModel = AutoModelForVision2Seq.from_pretrained(SOCIAL_MODEL_ID).to(device)
 
-# Loading smolVLM model 
-print(f"Loading model {MODEL_ID} on device: {DEVICE}...")
+# Setting the model to evaluation mode
+socialModel.eval()
 
-processor = AutoProcessor.from_pretrained(MODEL_ID)
-model = AutoModelForVision2Seq.from_pretrained(MODEL_ID).to(DEVICE)
-model.eval()
-
+# Printing model loading information
+print(f"Loading model {SOCIAL_MODEL_ID} on device: {device}...")
 print("Model loaded successfully.")
 
 # Checking if image exists
-if os.path.exists(IMAGE_PATH):
+if os.path.exists(mapImage):
 
-    # Loading image and converting image from RGB to BGR
-    image = Image.open(IMAGE_PATH).convert("RGB") 
+    # Loading image using OpenCV for flexibility
+    img = cv2.imread(mapImage)
+    
+    if img is None:
+        
+        raise ValueError(f"Could not load image: {mapImage}")
+    
+    # Converting image from BGR to RGB color channels
+    pilIMG = Image.open(mapImage).convert("RGB") 
 
-    # Resizing image
-    image = image.resize(NEW_SIZE)
+    # Printing loaded image confirmation
+    print(f"Loaded image: {mapImage}")
 
-    print(f"Loaded image: {IMAGE_PATH}")
-
-# Case where image does not exists
+# Raising an error if the map file is not found
 else:
 
-    print(f"Error! Image not found.")
+    raise FileNotFoundError(f"Image not found: {mapImage}")
 
-    exit()
 
-# Preparing prompt for smolVLM
-prompt = "Describe in one detailed paragraph the objects detected in this image." \
-          "Elaborate your responses"
+# This function evaluates the path in the image using VLM
+def EvaluatePath(img, start, goal): 
+    
+    # Converting input image to PIL format for model input
+    pilIMG = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-# Enabling the right prompt format 
-# feeded to smolVLM processing process 
-formattedPrompt = f"<image>{prompt}" 
+    # Constructing messages for chat template with image and prompt
+    messages = [
+    
+        {
+            "role": "user",
+            "content": [
+              
+                {"type": "image"},
+                
+                {"type": "text", "text": "You are given an image with a red path, a green start point, a blue goal point, and yellow obstacles. Score from 1 to 5 range: socially aware navigation and speed of the red path. Output ONLY integer numbers in brackets [], no extra text."}
 
-# Processing an input pair of image and prompt
-inputs = processor(images=image, text=formattedPrompt, return_tensors="pt").to(DEVICE)
+            ]
+        }
+    ]
 
-print("Generating response...")
+    # Applying chat template to generate prompt string
+    prompt = socialProcessor.apply_chat_template(messages, add_generation_prompt=True)
+    
+    # Processing text and image inputs for model inference
+    inputs = socialProcessor(text=prompt, images=pilIMG, return_tensors="pt").to(device)
 
-# Creating an output, a response 
-with torch.no_grad():
+    # Generating output with no gradient computation for efficiency
+    with torch.no_grad():
+    
+        # Generating token IDs using model with specified parameters
+        outputIDs = socialModel.generate(
+    
+            **inputs,
+            max_new_tokens=15,
+            do_sample=True,
+            temperature=0.3,
+        )
 
-    outputIDS = model.generate(
+    # Decoding generated token IDs to evaluation text
+    evaluationText = socialProcessor.decode(outputIDs[0], skip_special_tokens=True)
+    
+    # Isolate Assistant
+    # Converting text to lowercase for finding assistant section
+    textLower = evaluationText.lower()
+    
+    # Checking and extracting assistant response if present
+    if "assistant:" in textLower:
+    
+        # Finding start position of assistant response
+        assistant_start = textLower.find("assistant:") + len("assistant:")
+    
+        # Extracting raw output from assistant section
+        raw_VLM_Output = evaluationText[assistant_start:].strip()
+    
+    # Fallback extraction if no assistant marker found
+    else:
+    
+        # Removing prompt and stripping whitespace
+        raw_VLM_Output = evaluationText.replace(prompt, "").strip()
+    
+    # Cleaning VLM output by removing special tokens
+    clean_VLM_Output = re.sub(r'<[^>]+>', '', raw_VLM_Output).strip()
+    
+    # Finding all integer values after cleaning
+    allInts = re.findall(r'\d+', clean_VLM_Output.replace('.', ''))  
+    
+    # Processing found integers if at least one exists
+    if len(allInts) >= 1:  
+    
+        # Clamping scores to [1,5] range using first 2
+        scores = [max(1, min(5, int(i))) for i in allInts[:2]]
+    
+        # Padding with average score if fewer than 2
+        if len(scores) < 2:
+    
+            scores += [3] * (2 - len(scores))  
+    
+    # Defaulting to neutral scores if no integers found
+    else:
+    
+        scores = [3, 3]
 
-        **inputs,
-        max_new_tokens=MAX_NEW_TOKENS,
-        do_sample=False, 
-        temperature=0.0
-    )
+    # Returning formatted evaluation string if scores available
+    if scores:
+    
+        # Formatting scores into multi-line string
+        return f"""
+               1. Social Awareness: {scores[0]} / 5
+               2. Optimality/Speed: {scores[1]} / 5
+               """
+    
+    # Handling fallback case for evaluation
+    else:
+    
+        # Printing fallback message
+        print("Eval fallback to average")
+    
+        # Setting default scores
+        scores = [3, 3]
+    
+        # Returning formatted fallback string
+        return f"""
+               1. Social Awareness: {scores[0]} / 5 (fallback)
+               2. Optimality/Speed: {scores[1]} / 5 (fallback)
+               """
 
-# Decocing output text results 
-outputText = processor.decode(outputIDS[0], skip_special_tokens=True)
-description = outputText.replace(formattedPrompt, "").strip()
 
-# Displaying output text
+# Querying VLM for path evaluation
+print("Querying VLM for path evaluation...")
+
+# Defining the starting point coordinate in the 250x250 image space 
+start = [242, 125]
+
+# Defining the goal point coordinate in the 250x250 image space
+goal = [7, 220]
+
+# Getting evaluation from VLM
+evaluation = EvaluatePath(img, start, goal)
+
+# Printing model output
 print("\nModel Output")
-print(description) 
+print(evaluation)
