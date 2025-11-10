@@ -1,0 +1,15 @@
+The prompt used to ask LLMs to generated a socially aware and optimal path is:
+
+Prompt:
+
+Scenario: A person (or autonomous agent) must navigate from a starting point (green Dot) to a goal point (blue Dot) within a defined space containing obstacles and static people. The goal of the navigation is to be socially aware, meaning the path must respect social norms (like maintaining a personal space buffer around people) while simultaneously seeking the shortest possible path that adheres to those norms.
+
+Task:
+
+Analyze the original image provided (showing the layout of obstacles, people, and the start/end dots).
+Illustrate the optimal path that balances social awareness and path length by drawing a Red Line connecting the green Dot to the blue Dot. The path should clearly loop around people to avoid violating their personal space.
+Provide a brief justification for the illustrated path, explaining which social norms were prioritized over raw distance, and why the path chosen is more optimal than a simple straight line.
+
+Constraint:
+
+The resulting image must include all original elements (people, obstacles, bounding boxes, and the two dots) plus the new Red Path.
