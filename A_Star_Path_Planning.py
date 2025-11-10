@@ -15,13 +15,13 @@ from transformers import AutoProcessor, AutoModelForVision2Seq
 
 
 # Defining path of the occupancy grid map image
-mapImage = "Test_Images/Occupancy_Grid_Map.png"
+mapImage = "Test_Images/Laboratory.jpg" 
 
 # Defining output path for saving final image
-outputPath = "New_Results/ImageResult.png"
+outputPath = "New_Results/ImageResultLaboratory.png"
 
 # Defining output path for saving final social cost map image
-outputPath2 = "New_Results/Social_Cost_Map.png"
+outputPath2 = "New_Results/Social_Cost_Map_Laboratory.png"
 
 # System requirements setup
 # Loading the VLM model
@@ -38,8 +38,8 @@ socialModel = AutoModelForVision2Seq.from_pretrained(SOCIAL_MODEL_ID).to("cpu")
 socialModel.eval()
 
 # Values for obstacle severity penalty
-PERSON_MULT = 1.0
-CHAIR_MULT  = 0.3
+PERSON_MULTI = 1.0
+OBSTACLE_MULTI  = 0.3
 
 
 # This function is used to create a
@@ -58,7 +58,7 @@ def Social_Cost_Map(img, output_size):
                 
                 {"type": "image"},
                
-                {"type": "text", "text": "Top-down room. Score social cost 0-1 for 4 quadrants: top-left, top-right, bottom-left, bottom-right. 0.0=safe, 1.0=bad near yellow people/chairs. Output ONLY floating point numbers, no extra text."}
+                {"type": "text", "text": "Top-down room. Score social cost 0-1 for 4 quadrants: top-left, top-right, bottom-left, bottom-right. 0.0=safe, 1.0=bad near yellow people and obstacles. Output ONLY floating point numbers, no extra text."}
 
             ]
         }
@@ -386,10 +386,10 @@ refWidth = 500
 refHeight = 500
 
 # Defining the starting point coordinate in the 500x500 reference space
-refStart = [485, 250]   
+refStart = [400, 480]   
 
 # Defining the goal point coordinate in the 500x500 reference space
-refGoal  = [15, 440]     
+refGoal  = [345, 235]     
 
 # Dynamic: Reading actual image to get real size 
 # Temporarily reading the map image to check its actual dimensions
@@ -1035,12 +1035,12 @@ def RunPlanner():
         if cid in [0]:   
           
             # Applying person multiplier to score
-            score *= PERSON_MULT
+            score *= PERSON_MULTI
         
         # Applying chair multiplier to score
         else:
         
-            score *= CHAIR_MULT
+            score *= OBSTACLE_MULTI
 
         # Calculating center coordinates
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -1238,10 +1238,10 @@ def RunPlanner():
     cv2.imshow("Social Cost", visualization)
 
     # Saving social cost map image
-    cv2.imwrite("New_Results/Social_Cost_Map.png", visualization)
+    cv2.imwrite(outputPath2, visualization)
 
     # Printing saved message for social cost map
-    print("Saved", "Social_Cost_Map.png")
+    print("Saved", outputPath2)
 
     # Showing A* planner window 
     cv2.imshow("A* Planner", imgDraw)
