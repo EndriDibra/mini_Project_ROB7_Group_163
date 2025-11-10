@@ -1,0 +1,18 @@
+These are the prompts used to make scenes with different environments, with people and obstacles, in order to test our final socially aware path planning algorithm, and check its robustness and generalization.
+
+1) Prompt for Urban Road scene:
+
+Now i want you to put on that white empty image, a realistic scene, the scene should be this: an urban road with 4 cars and 3 people placed in random positions on the image. There should be space between the 4 cars and 3 people, because i want to test that new image from you for my path planning algorithm, so a path will be visualized there, this is why i need space between the 4 cars and 3 people. Finally the image must be of resolution 1000 per 1000 pixels.
+
+2) Prompt for Nature scene:
+
+Perfect you really did an awesome job. Now do exactly the same process but not for an urban area this time, but for a nature scene, again with people and cars.
+
+3) Prompt for Laboratory scene:
+
+Again you nailed it! Thank you! And now do the same process for a lab scene with people and chairs.
+
+
+4) Prompt for Playground scene:
+
+Finally, provide me now with an image following the same process, but for a scene with children and bikes in a playground, in a scene with trees and Alps.
