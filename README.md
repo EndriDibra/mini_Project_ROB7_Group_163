@@ -11,6 +11,9 @@ Ultimately, the generated path from our tech pipeline is compared to other gener
 ### A_Star_Path_Planning.py
 This is the program that contains the entire logic and functions for this project. The other python files are subset of the A_Star_Path_Planning.py, provided for easier comprehension of the code and implementation of it.
 
+### PPT Folder
+This is the directory that contains the report and presentation of this project.
+
 ## Extra Research: SmolVLA
 
 ### download_data_aria2.py
