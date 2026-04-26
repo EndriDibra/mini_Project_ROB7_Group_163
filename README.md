@@ -1,29 +1,176 @@
-# Mini Project regarding Advanced Robotic Perception course from ROB7-Group-163
-## Brief Description
-This project implements a socially aware path planner designed to navigate an autonomous agent—like robot from a start point to a goal point within a mapped environment, optimizing not just for distance, but also for social acceptability and awareness. The process starts by loading a map and using a YOLO (You Only Look Once) model [YOLOv11n] to detect dynamic obstacles like people and chairs. These detected objects are used to create an inflated cost map, ensuring the robot maintains a safe distance from physical boundaries.
+# Socially Aware Robotic Path Planning using Computer Vision, A* Search, and Vision-Language Models
 
-Crucially, the system introduces a layer of intelligence by querying a Visual Language Model (VLM), specifically SmolVLM-Instruct, with the map image. The VLM acts as a "social consciousness," analyzing the scene and returning a social cost map, which assigns higher costs (penalties) to paths passing through areas deemed socially inappropriate (e.g., cutting too close to seating areas or through dense crowds). These two costs, physical obstacle avoidance and social cost, are combined into a single cost landscape. The core pathfinding is executed by a A* search algorithm, which is augmented with penalties for sharp turns and high curvature to ensure the generated path is smooth and robot-friendly.
+## Authors
+**Endri Dibra and Daniel Dharampal**
 
-Once the raw path is found, it is refined using a line-of-sight pruning algorithm to remove redundant waypoints and then smoothed using B-spline interpolation to create a fluid, continuous trajectory. Finally, the VLM is queried again to provide an evaluation of the generated path's social awareness and optimality, offering a quantifiable feedback loop. In short, the program aims to generate paths that are not only efficient and safe but also polite and predictable, making robot movement seamless and less disruptive in human-centric spaces. The end result is a visual representation of the path overlaid on the map [2D Static Image].
+## Project Overview
+This project was developed as part of the **Advanced Robotic Perception** course (ROB7 – Group 163). It focuses on generating robot navigation paths that are not only efficient and collision-free, but also **socially aware**, safe, and human-friendly.
 
-Ultimately, the generated path from our tech pipeline is compared to other generated paths from other LLMs, using as inputs: a prompt and the original image that has the two people/obstacles, 5 chairs/obstacles, the start green point and goal blue point. The results from LLMs' generated paths are quite interesting. They are stored in the folder LLMs_Results. Then, different scenes are also tested from our algorithm and Gemini-2.5-Flash, their results are stored in folder: LLMs_Results2. Hope this project to assist you with brainstorming new exciting ideas for your own awesome work!
+Traditional path planners usually optimize for shortest distance. In contrast, this system introduces a higher level of reasoning by combining:
 
-### A_Star_Path_Planning.py
-This is the program that contains the entire logic and functions for this project. The other python files are subset of the A_Star_Path_Planning.py, provided for easier comprehension of the code and implementation of it.
+- **Computer Vision** for obstacle detection  
+- **A\*** path planning for optimal navigation  
+- **Vision-Language Models (VLMs)** for social reasoning  
+- **Path smoothing techniques** for realistic robot motion  
 
-### PPT Folder
-This is the directory that contains the report and presentation of this project.
+The final result is a robot trajectory that avoids obstacles, respects human-centered spaces, and moves in a predictable and polite manner.
 
-## Extra Research: SmolVLA
+---
 
-### download_data_aria2.py
-Downloads SCAND dataset rosbag files from Texas Digital Library using aria2c for optimized parallel downloads. Features include resumable downloads, multiple connections per file (16 by default), and concurrent file downloads (8 by default). Automatically verifies downloaded files and handles interruptions gracefully. Requires aria2c to be installed (`sudo apt-get install aria2`).
+## Core Technologies Used
 
-### format_dataset.py
-Converts ROS bag files into LeRobot-compatible datasets with temporal multi-camera support. Processes odometry and image data at 4 FPS, creating episodes of 30 frames each. Supports dynamic instruction generation based on robot trajectory or static instructions. Features configurable temporal camera offsets for historical frame integration, automatic train/test splitting, and comprehensive validation. Outputs state vectors containing current and past velocities, with 32-dimensional action vectors (2D velocity commands + padding).
+### Computer Vision
+The system uses **YOLOv11n** to detect dynamic and static obstacles such as:
 
-### finetune_notes.py
-Shell command collection for training and evaluating SmolVLA models on the SCAND dataset. Contains three progressive training configurations: initial training (20k steps, batch size 32), full dataset training (30k steps, batch size 16), and fine-tuning with custom optimizer settings (50k steps, AdamW with gradient clipping). Includes evaluation and dataset visualization commands. All outputs are logged to training_log.txt.
+- People  
+- Chairs  
+- Furniture  
+- Other scene objects  
 
-### test.py
-Inference evaluation script for trained SmolVLA policies. Loads checkpointed models and runs predictions on test datasets, computing MSE/MAE metrics across action dimensions. Features per-dimension error analysis, prediction consistency checks, and temporal trajectory evaluation. Uses training statistics for proper normalization/denormalization of states and actions. Outputs comprehensive metrics including first-step errors, horizon variance, and sample predictions, saving results to NumPy archives for further analysis.
+Detected objects are converted into an occupancy grid and inflated safety zones to preserve comfortable distance.
+
+### Vision-Language Intelligence
+The project integrates **SmolVLM-Instruct** as a social reasoning model.
+
+The VLM analyzes the environment image and estimates:
+
+- Socially inappropriate areas  
+- Crowded or uncomfortable zones  
+- Regions near seated people or obstacles  
+- Better navigation corridors  
+
+This creates a **Social Cost Map** that influences robot decisions beyond geometry alone.
+
+### Path Planning
+Navigation is solved using a customized **A\*** search algorithm enhanced with:
+
+- Obstacle proximity penalties  
+- Social cost penalties  
+- Turn penalties  
+- Curvature penalties  
+
+This allows generation of smoother and more natural robot paths.
+
+### Path Optimization
+The raw path is refined through:
+
+- **Line-of-Sight pruning** → removes unnecessary waypoints  
+- **B-Spline interpolation** → smooth continuous trajectory generation  
+
+---
+
+## Full Pipeline
+
+1. Load mapped environment image  
+2. Detect people and obstacles using YOLO  
+3. Build obstacle inflation map  
+4. Query VLM for global social cost estimation  
+5. Query VLM again for local object threat scoring  
+6. Merge physical + social costs into unified map  
+7. Run enhanced A* planner  
+8. Prune redundant nodes  
+9. Smooth final path with splines  
+10. Re-evaluate generated path with VLM scoring system  
+
+---
+
+## Output
+
+The system generates:
+
+- Final path drawn on original map  
+- Social cost heatmap  
+- Navigation quality evaluation  
+- Social awareness score  
+- Speed / efficiency score  
+
+---
+
+## Main File
+
+### `A_Star_Path_Planning.py`
+
+This file contains the complete implementation including:
+
+- Object detection  
+- Cost map generation  
+- Social reasoning logic  
+- A* planning  
+- Path smoothing  
+- Visualization  
+
+Other Python files in the repository are modular subsets created for easier understanding.
+
+---
+
+## Research Extension: SmolVLA
+
+This repository also contains extra research work involving **SmolVLA**, focused on robotic learning from demonstration datasets.
+
+### Included Scripts
+
+#### `download_data_aria2.py`
+Efficient multi-threaded downloader for SCAND rosbag datasets using `aria2c`.
+
+#### `format_dataset.py`
+Converts ROS bag files into **LeRobot-compatible datasets** with:
+
+- Multi-camera temporal frames  
+- Train/test split  
+- Dynamic robot instructions  
+- State-action formatting  
+
+#### `finetune_notes.py`
+Training configurations and shell commands for SmolVLA fine-tuning using progressive optimization strategies.
+
+#### `test.py`
+Evaluation pipeline for trained SmolVLA policies using:
+
+- MSE  
+- MAE  
+- Trajectory consistency  
+- Prediction horizon analysis  
+
+---
+
+## Why This Project Matters
+
+Robots operating around humans must do more than avoid collisions.
+
+They must also:
+
+- Respect personal space  
+- Avoid disturbing people  
+- Move predictably  
+- Behave naturally in shared environments  
+
+This project explores how **Large Vision Models + Classical Robotics** can be combined to solve that challenge.
+
+---
+
+## Future Improvements
+
+Possible next steps:
+
+- Real-time ROS2 deployment  
+- Dynamic moving pedestrian prediction  
+- Reinforcement learning refinement  
+- Multi-robot cooperation  
+- 3D LiDAR + RGB fusion  
+- Simulation in Gazebo / Isaac Sim  
+
+---
+
+## Final Note
+
+This project reflects my interest in merging:
+
+- Artificial Intelligence  
+- Computer Vision  
+- Robotics  
+- Human-Robot Interaction  
+- Autonomous Systems  
+
+with practical engineering solutions.
+
+**Authors: Endri Dibra and Daniel Dharampal**
