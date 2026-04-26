@@ -172,5 +172,3 @@ This project reflects my interest in merging:
 - Autonomous Systems  
 
 with practical engineering solutions.
-
-**Authors: Endri Dibra and Daniel Dharampal**
